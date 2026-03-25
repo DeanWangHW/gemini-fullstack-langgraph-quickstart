@@ -1,12 +1,35 @@
+"""Agent 运行时配置模型。
+
+本模块负责将以下配置来源合并为统一对象：
+
+1. 代码默认值；
+2. 运行时 `RunnableConfig.configurable`；
+3. 环境变量（优先级最高）。
+"""
+
 import os
-from pydantic import BaseModel, Field
 from typing import Any, Optional
 
 from langchain_core.runnables import RunnableConfig
+from pydantic import BaseModel, Field
 
 
 class Configuration(BaseModel):
-    """The configuration for the agent."""
+    """研究型 Agent 的统一配置载体。
+
+    Attributes
+    ----------
+    query_generator_model : str
+        用于初始查询词生成的模型名称。
+    reflection_model : str
+        用于反思阶段（判断信息是否充分、补充后续查询）的模型名称。
+    answer_model : str
+        用于最终答案合成的模型名称。
+    number_of_initial_queries : int
+        初始查询数量上限。
+    max_research_loops : int
+        最大研究循环次数，防止在低质量搜索结果上无限迭代。
+    """
 
     query_generator_model: str = Field(
         default="gpt-4.1-mini",
@@ -43,7 +66,26 @@ class Configuration(BaseModel):
     def from_runnable_config(
         cls, config: Optional[RunnableConfig] = None
     ) -> "Configuration":
-        """Create a Configuration instance from a RunnableConfig."""
+        """从 `RunnableConfig` 与环境变量构建配置实例。
+
+        Parameters
+        ----------
+        config : RunnableConfig or None, optional
+            LangGraph 运行时配置对象。若为空，则只使用环境变量与默认值。
+
+        Returns
+        -------
+        Configuration
+            合并后的最终配置对象。
+
+        Notes
+        -----
+        优先级遵循：
+
+        1. 环境变量（例如 `QUERY_GENERATOR_MODEL`）；
+        2. `config["configurable"]`；
+        3. Pydantic 字段默认值。
+        """
         configurable = (
             config["configurable"] if config and "configurable" in config else {}
         )

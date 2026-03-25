@@ -8,14 +8,38 @@ from agent.graph import graph
 
 
 def _format_update(update: Any, pretty: bool) -> str:
-    """Format a graph update payload for terminal output."""
+    """格式化图节点更新信息。
+
+    Parameters
+    ----------
+    update : Any
+        节点更新对象。
+    pretty : bool
+        是否使用缩进格式输出 JSON。
+
+    Returns
+    -------
+    str
+        格式化后的字符串。
+    """
     if pretty:
         return json.dumps(update, ensure_ascii=False, default=str, indent=2)
     return json.dumps(update, ensure_ascii=False, default=str)
 
 
 def main() -> None:
-    """Run the research agent and stream node-by-node updates."""
+    """以流式方式运行研究 Agent 并打印节点级更新。
+
+    Parameters
+    ----------
+    None
+        参数通过命令行传入。
+
+    Returns
+    -------
+    None
+        过程输出直接写入标准输出。
+    """
     parser = argparse.ArgumentParser(
         description="Run the LangGraph research agent with streaming node updates"
     )

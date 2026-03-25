@@ -1,3 +1,12 @@
+"""OpenAI 调用与网页检索摘要客户端。
+
+该模块是后端“模型调用 + 检索摘要”能力的统一入口，负责：
+
+1. 文本生成与结构化生成；
+2. DDG 检索、结果归一化与来源结构化；
+3. 查询预处理、错误聚合与摘要兜底。
+"""
+
 import json
 import os
 import re
@@ -9,6 +18,12 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from pydantic import BaseModel
 
+from agent.search_retry import (
+    DEFAULT_SEARCH_RETRY_POLICY,
+    get_ddg_retry_backends,
+    truncate_provider_errors,
+)
+
 T = TypeVar("T", bound=BaseModel)
 
 # Explicitly load backend/.env so variable resolution does not depend on cwd.
@@ -17,7 +32,19 @@ load_dotenv(dotenv_path=BACKEND_ENV_PATH)
 
 
 class LLMClient:
-    """Wrap OpenAI model calls and web search utilities."""
+    """封装 OpenAI 调用与网页检索工具链。
+
+    Parameters
+    ----------
+    api_key : str or None, optional
+        显式传入的 OpenAI API Key。为空时从环境变量 `OPENAI_API_KEY` 读取。
+    base_url : str or None, optional
+        OpenAI 兼容网关地址。为空时从环境变量 `OPENAI_BASE_URL` 读取。
+
+    Notes
+    -----
+    客户端对象采用延迟初始化策略，首次调用 `_get_client` 时才真正创建 SDK 实例。
+    """
 
     _SEARCH_STOPWORDS = {
         "a",
@@ -63,7 +90,22 @@ class LLMClient:
         model: str,
         temperature: float = 0.0,
     ) -> str:
-        """Generate plain text from an OpenAI chat model."""
+        """生成普通文本回答。
+
+        Parameters
+        ----------
+        prompt : str
+            输入提示词。
+        model : str
+            目标模型名称。
+        temperature : float, optional
+            采样温度，默认 `0.0`。
+
+        Returns
+        -------
+        str
+            模型返回的纯文本内容。
+        """
         return self._chat_completion(
             prompt=prompt,
             model=model,
@@ -78,7 +120,24 @@ class LLMClient:
         model: str,
         temperature: float = 0.0,
     ) -> T:
-        """Generate JSON and validate it against a Pydantic schema."""
+        """生成结构化 JSON 并校验为 Pydantic 对象。
+
+        Parameters
+        ----------
+        prompt : str
+            输入提示词。
+        schema : type[T]
+            目标 Pydantic 模型类型。
+        model : str
+            目标模型名称。
+        temperature : float, optional
+            采样温度，默认 `0.0`。
+
+        Returns
+        -------
+        T
+            通过 `schema.model_validate` 校验后的结构化对象。
+        """
         raw_text = self._chat_completion(
             prompt=prompt,
             model=model,
@@ -96,7 +155,37 @@ class LLMClient:
         model: str,
         max_results: int = 5,
     ) -> tuple[str, list[dict[str, str]]]:
-        """Run web search and summarize findings with source markers."""
+        """执行网页检索并生成带引用占位符的摘要。
+
+        Parameters
+        ----------
+        query : str
+            原始检索查询。
+        query_id : int
+            当前查询任务 ID，用于生成短链接占位符。
+        model : str
+            用于摘要生成的模型名称。
+        max_results : int, optional
+            最多采用的去重结果数，默认 5。
+
+        Returns
+        -------
+        tuple[str, list[dict[str, str]]]
+            二元组 `(summary_text, sources)`：
+
+            - `summary_text`：摘要文本（含短链接引用）；
+            - `sources`：来源结构列表（label/short_url/value）。
+
+        Raises
+        ------
+        ImportError
+            当运行环境缺少 `ddgs` 依赖时抛出。
+
+        Notes
+        -----
+        当检索为空时，函数返回包含错误上下文的可读文本，而不是抛异常，
+        以保证图流程可继续进入反思阶段。
+        """
         try:
             from ddgs import DDGS
         except ImportError as exc:
@@ -123,8 +212,12 @@ class LLMClient:
         if not deduped_results:
             error_context = ""
             if search_errors:
-                error_context = (
-                    " Search provider errors: " + " | ".join(search_errors[:2])
+                summarized_errors = truncate_provider_errors(
+                    search_errors,
+                    DEFAULT_SEARCH_RETRY_POLICY,
+                )
+                error_context = " Search provider errors: " + " | ".join(
+                    summarized_errors
                 )
             return (
                 f"No search results were found for '{query}'.{error_context}",
@@ -179,7 +272,18 @@ class LLMClient:
 
     @classmethod
     def _prepare_search_query(cls, query: str) -> str:
-        """Normalize model-generated search queries before sending to DDG."""
+        """在发送到搜索引擎前清洗查询文本。
+
+        Parameters
+        ----------
+        query : str
+            原始查询文本（可能来自 LLM）。
+
+        Returns
+        -------
+        str
+            清洗后的查询文本。会移除“please cite”类非检索关键词，并在过长时压缩。
+        """
         normalized = " ".join((query or "").split()).strip()
         if not normalized:
             return ""
@@ -199,7 +303,20 @@ class LLMClient:
 
     @classmethod
     def _simplify_search_query(cls, query: str, max_terms: int = 18) -> str:
-        """Convert long natural-language prompts into compact keyword queries."""
+        """将自然语言长问句压缩为关键词查询。
+
+        Parameters
+        ----------
+        query : str
+            原始查询文本。
+        max_terms : int, optional
+            保留关键词上限，默认 18。
+
+        Returns
+        -------
+        str
+            适合搜索引擎的紧凑关键词字符串。
+        """
         normalized = re.sub(r"[–—]", " ", query)
         tokens = re.findall(r"[A-Za-z0-9][A-Za-z0-9.+\-/]*", normalized)
 
@@ -235,8 +352,26 @@ class LLMClient:
         query: str,
         max_results: int,
     ) -> tuple[list[dict[str, str]], list[str]]:
-        """Run DDG queries with backend fallbacks and collect normalized results."""
-        backends: list[str | None] = [None, "html", "lite", "bing"]
+        """执行 DDG 多 backend 检索并聚合结果。
+
+        Parameters
+        ----------
+        DDGS : Any
+            `ddgs.DDGS` 类对象（通过外部注入，便于测试替身）。
+        query : str
+            已清洗后的查询文本。
+        max_results : int
+            单 backend 最大返回结果数。
+
+        Returns
+        -------
+        tuple[list[dict[str, str]], list[str]]
+            二元组 `(rows, errors)`：
+
+            - `rows`：归一化后的检索结果；
+            - `errors`：各 backend 错误摘要。
+        """
+        backends = get_ddg_retry_backends(DEFAULT_SEARCH_RETRY_POLICY)
         errors: list[str] = []
 
         for backend in backends:
@@ -259,7 +394,18 @@ class LLMClient:
 
     @staticmethod
     def _normalize_search_rows(items: Any) -> list[dict[str, str]]:
-        """Normalize DDG rows into title/url/snippet records."""
+        """把 DDG 返回结构归一化为统一记录格式。
+
+        Parameters
+        ----------
+        items : Any
+            DDG 原始返回对象（可能是列表、字典或迭代器）。
+
+        Returns
+        -------
+        list[dict[str, str]]
+            统一后的记录列表，字段为 `title/url/snippet`。
+        """
         normalized: list[dict[str, str]] = []
         if items is None:
             return normalized
@@ -299,7 +445,24 @@ class LLMClient:
         max_results: int,
         backend: str | None,
     ) -> Any:
-        """Call DDGS text search with compatibility fallback for old signatures."""
+        """调用 DDGS 文本搜索，并兼容旧签名。
+
+        Parameters
+        ----------
+        ddgs : Any
+            DDGS 客户端实例。
+        query : str
+            查询文本。
+        max_results : int
+            最大结果数。
+        backend : str or None
+            指定 backend。`None` 表示默认 backend。
+
+        Returns
+        -------
+        Any
+            DDG 原始检索返回对象。
+        """
         if backend is None:
             return ddgs.text(query, max_results=max_results)
         try:
@@ -319,7 +482,28 @@ class LLMClient:
         temperature: float,
         response_format: dict[str, Any] | None = None,
     ) -> str:
-        """Call OpenAI chat completion and normalize content to text."""
+        """执行 Chat Completions 调用并统一返回文本。
+
+        Parameters
+        ----------
+        prompt : str
+            输入提示词。
+        model : str
+            模型名称。
+        temperature : float
+            采样温度。
+        response_format : dict[str, Any] or None, optional
+            结构化输出配置（例如 JSON 模式）。
+
+        Returns
+        -------
+        str
+            归一化后的文本内容。
+
+        Notes
+        -----
+        OpenAI SDK 可能返回字符串、列表块或空值；该函数统一处理为字符串。
+        """
         request: dict[str, Any] = {
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
@@ -348,7 +532,18 @@ class LLMClient:
 
     @staticmethod
     def _parse_json_payload(raw_text: str) -> dict[str, Any]:
-        """Parse JSON payload from model output."""
+        """从模型输出中提取 JSON 负载。
+
+        Parameters
+        ----------
+        raw_text : str
+            模型原始文本输出（可能包含 Markdown 代码块包裹）。
+
+        Returns
+        -------
+        dict[str, Any]
+            解析后的 JSON 字典。
+        """
         text = raw_text.strip()
         fenced_match = re.search(r"```(?:json)?\s*(.*?)```", text, flags=re.DOTALL)
         if fenced_match:
@@ -357,7 +552,20 @@ class LLMClient:
 
     @staticmethod
     def _make_source_label(title: str, url: str) -> str:
-        """Build a compact human-readable source label."""
+        """构建来源展示标签。
+
+        Parameters
+        ----------
+        title : str
+            原始标题。
+        url : str
+            原始链接。
+
+        Returns
+        -------
+        str
+            若标题存在，返回截断标题；否则返回域名。
+        """
         if title:
             return title[:80]
         hostname = urlparse(url).netloc.lower().replace("www.", "")
@@ -368,7 +576,20 @@ class LLMClient:
         results: list[dict[str, str]],
         sources: list[dict[str, str]],
     ) -> str:
-        """Fallback formatter when model summary has no citations."""
+        """当模型摘要缺少引用时生成保底摘要。
+
+        Parameters
+        ----------
+        results : list[dict[str, str]]
+            检索结果列表。
+        sources : list[dict[str, str]]
+            对应来源列表。
+
+        Returns
+        -------
+        str
+            带来源链接的基础摘要文本。
+        """
         lines = ["Search findings:"]
         for result, source in zip(results, sources, strict=False):
             snippet = result["snippet"] or result["title"] or source["value"]
@@ -377,7 +598,20 @@ class LLMClient:
 
     @staticmethod
     def _truncate_query(query: str, *, max_length: int) -> str:
-        """Truncate long query text for safer search/provider logs."""
+        """截断过长查询文本，避免日志或 provider 参数异常。
+
+        Parameters
+        ----------
+        query : str
+            原始查询文本。
+        max_length : int
+            最大允许长度。
+
+        Returns
+        -------
+        str
+            截断后的查询文本。
+        """
         if len(query) <= max_length:
             return query
         truncated = query[:max_length].rsplit(" ", 1)[0].strip()
@@ -386,7 +620,18 @@ class LLMClient:
         return f"{truncated}..."
 
     def _get_client(self) -> OpenAI:
-        """Lazily initialize the OpenAI client."""
+        """获取（或初始化）OpenAI 客户端实例。
+
+        Returns
+        -------
+        openai.OpenAI
+            可复用的 SDK 客户端。
+
+        Raises
+        ------
+        ValueError
+            当未提供 `OPENAI_API_KEY` 时抛出。
+        """
         if self.client is None:
             key = self.api_key or os.getenv("OPENAI_API_KEY")
             if not key:

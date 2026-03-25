@@ -31,7 +31,6 @@ def test_generate_query_uses_structured_llm(monkeypatch) -> None:
     )
 
     assert result["search_query"] == ["q1", "q2"]
-    assert state["initial_search_query_count"] == 2
     assert captured["schema"] is SearchQueryList
     assert captured["model"] == "gpt-4.1-mini"
 

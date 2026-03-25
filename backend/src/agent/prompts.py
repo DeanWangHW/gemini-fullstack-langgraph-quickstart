@@ -1,11 +1,27 @@
+"""集中管理 Agent 使用的提示词模板。
+
+本文件以“常量模板 + 轻量日期工具”的形式组织，目标是：
+
+1. 保持提示词文本与节点逻辑解耦；
+2. 便于后续按阶段做版本化管理；
+3. 让测试可以独立验证模板渲染结果。
+"""
+
 from datetime import datetime
 
 
-# Get current date in a readable format
-def get_current_date():
+def get_current_date() -> str:
+    """返回当前日期字符串。
+
+    Returns
+    -------
+    str
+        形如 ``"March 25, 2026"`` 的日期字符串。
+    """
     return datetime.now().strftime("%B %d, %Y")
 
 
+# 查询生成节点模板：负责产出面向搜索引擎的短关键词查询。
 query_writer_instructions = """Your goal is to generate sophisticated and diverse web search queries. These queries are intended for an advanced automated web research tool capable of analyzing complex results, following links, and synthesizing information.
 
 Instructions:
@@ -37,6 +53,8 @@ Topic: What revenue grew more last year apple stock or the number of people buyi
 Context: {research_topic}"""
 
 
+# 传统检索模板（当前主流程已采用 llm_client.search_and_summarize 内置流程，
+# 该模板保留用于后续扩展或回归对照）。
 web_searcher_instructions = """Conduct targeted web searches to gather the most recent, credible information on "{research_topic}" and synthesize it into a verifiable text artifact.
 
 Instructions:
@@ -50,6 +68,7 @@ Research Topic:
 {research_topic}
 """
 
+# 反思节点模板：判定信息充分性并产出后续查询建议。
 reflection_instructions = """You are an expert research assistant analyzing summaries about "{research_topic}".
 
 Instructions:
@@ -84,6 +103,7 @@ Summaries:
 {summaries}
 """
 
+# 最终回答节点模板：将多轮摘要汇总为最终回答并保留来源引用。
 answer_instructions = """Generate a high-quality answer to the user's question based on the provided summaries.
 
 Instructions:

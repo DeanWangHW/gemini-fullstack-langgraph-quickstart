@@ -1,3 +1,17 @@
+"""LangGraph 主流程定义模块。
+
+状态流固定为：
+
+`generate_query -> web_research -> reflection -> finalize_answer`
+
+其中：
+
+1. `generate_query` 负责生成检索查询；
+2. `web_research` 负责执行检索并摘要；
+3. `reflection` 判断是否需要继续检索；
+4. `finalize_answer` 汇总并替换最终引用链接。
+"""
+
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
@@ -6,17 +20,27 @@ from langgraph.types import Send
 
 from agent.configuration import Configuration
 from agent.llm_client import llm_client
-from agent.prompts import (
-    answer_instructions,
-    get_current_date,
-    query_writer_instructions,
-    reflection_instructions,
+from agent.model_selection import (
+    carry_reasoning_model,
+    select_answer_model,
+    select_query_model,
+    select_reflection_model,
+    select_research_model,
+)
+from agent.prompt_builder import (
+    build_answer_prompt,
+    build_query_prompt,
+    build_reflection_prompt,
 )
 from agent.state import (
-    OverallState,
-    QueryGenerationState,
-    ReflectionState,
-    WebSearchState,
+    AgentState,
+    FinalizeAnswerInput,
+    FinalizeAnswerOutput,
+    GenerateQueryInput,
+    GenerateQueryOutput,
+    ReflectionOutput,
+    WebResearchOutput,
+    WebResearchTask,
 )
 from agent.tools_and_schemas import Reflection, SearchQueryList
 from agent.utils import get_research_topic
@@ -25,72 +49,108 @@ load_dotenv()
 
 
 # Nodes
-def generate_query(state: OverallState, config: RunnableConfig) -> QueryGenerationState:
-    """LangGraph node that generates search queries based on the User's question.
+def generate_query(
+    state: GenerateQueryInput,
+    config: RunnableConfig,
+) -> GenerateQueryOutput:
+    """生成初始检索查询列表。
 
-    Uses an OpenAI model to create optimized search queries for web research.
+    Parameters
+    ----------
+    state : GenerateQueryInput
+        当前节点输入，至少包含用户消息列表。
+    config : RunnableConfig
+        LangGraph 运行时配置，用于解析模型与循环参数。
 
-    Args:
-        state: Current graph state containing the User's question
-        config: Configuration for the runnable, including LLM provider settings
+    Returns
+    -------
+    GenerateQueryOutput
+        包含 `search_query` 的结构化结果，并在可用时透传 `reasoning_model`。
 
-    Returns:
-        Dictionary with state update, including search_query key containing the generated queries
+    Notes
+    -----
+    - 查询词生成使用结构化输出 `SearchQueryList`，减少解析不确定性。
+    - 节点不做任何外部副作用，仅返回状态增量。
     """
     configurable = Configuration.from_runnable_config(config)
-    query_model = state.get("reasoning_model") or configurable.query_generator_model
-
-    # check for custom initial search query count
-    if state.get("initial_search_query_count") is None:
-        state["initial_search_query_count"] = configurable.number_of_initial_queries
-
-    # Format the prompt
-    current_date = get_current_date()
-    formatted_prompt = query_writer_instructions.format(
-        current_date=current_date,
-        research_topic=get_research_topic(state["messages"]),
-        number_queries=state["initial_search_query_count"],
+    query_model = select_query_model(state, configurable)
+    number_queries = state.get(
+        "initial_search_query_count", configurable.number_of_initial_queries
     )
-    # Generate the search queries
+    formatted_prompt = build_query_prompt(
+        research_topic=get_research_topic(state["messages"]),
+        number_queries=number_queries,
+    )
     result = llm_client.generate_structured(
         formatted_prompt,
         schema=SearchQueryList,
         model=query_model,
         temperature=1.0,
     )
-    return {"search_query": result.query}
+    output: GenerateQueryOutput = {"search_query": result.query}
+    output.update(carry_reasoning_model(state))
+    return output
 
 
-def continue_to_web_research(state: QueryGenerationState):
-    """LangGraph node that sends the search queries to the web research node.
+def continue_to_web_research(state: GenerateQueryOutput) -> list[Send]:
+    """把查询列表扇出为多个 `web_research` 任务。
 
-    This is used to spawn n number of web research nodes, one for each search query.
+    Parameters
+    ----------
+    state : GenerateQueryOutput
+        查询生成节点输出。
+
+    Returns
+    -------
+    list[Send]
+        每条查询对应一个 `Send("web_research", payload)`。
+
+    Notes
+    -----
+    - 任务 ID 使用查询索引构造，保证同一批次内唯一。
+    - 若上游指定 `reasoning_model`，会被透传到每个分支任务。
     """
     sends: list[Send] = []
-    reasoning_model = state.get("reasoning_model")
+    reasoning_payload = carry_reasoning_model(state)
     for idx, search_query in enumerate(state["search_query"]):
         payload: dict[str, int | str] = {
             "search_query": search_query,
             "id": int(idx),
         }
-        if reasoning_model:
-            payload["reasoning_model"] = reasoning_model
+        payload.update(reasoning_payload)
         sends.append(Send("web_research", payload))
     return sends
 
 
-def web_research(state: WebSearchState, config: RunnableConfig) -> OverallState:
-    """LangGraph node that performs web research using a non-Gemini search tool.
+def web_research(
+    state: WebResearchTask,
+    config: RunnableConfig,
+) -> WebResearchOutput:
+    """执行单条查询的网页检索与摘要。
 
-    Args:
-        state: Current graph state containing the search query and research loop count
-        config: Configuration for the runnable, including search API settings
+    Parameters
+    ----------
+    state : WebResearchTask
+        检索任务载荷，包含查询文本与任务 ID。
+    config : RunnableConfig
+        运行时配置对象。
 
-    Returns:
-        Dictionary with state update, including sources_gathered, research_loop_count, and web_research_results
+    Returns
+    -------
+    WebResearchOutput
+        检索输出增量，包含：
+
+        - `sources_gathered`：来源列表；
+        - `search_query`：本次已执行查询（列表形式，便于 reducer 追加）；
+        - `web_research_result`：摘要文本列表。
+
+    Notes
+    -----
+    检索细节（DDG backend 重试、结果归一化、引用占位符）由 `llm_client`
+    内部负责，图节点只做编排与状态拼装。
     """
     configurable = Configuration.from_runnable_config(config)
-    research_model = state.get("reasoning_model") or configurable.query_generator_model
+    research_model = select_research_model(state, configurable)
     summary_text, sources_gathered = llm_client.search_and_summarize(
         query=state["search_query"],
         query_id=int(state["id"]),
@@ -104,31 +164,32 @@ def web_research(state: WebSearchState, config: RunnableConfig) -> OverallState:
     }
 
 
-def reflection(state: OverallState, config: RunnableConfig) -> ReflectionState:
-    """LangGraph node that identifies knowledge gaps and generates potential follow-up queries.
+def reflection(state: AgentState, config: RunnableConfig) -> ReflectionOutput:
+    """反思当前检索结果并生成下一轮查询建议。
 
-    Analyzes the current summary to identify areas for further research and generates
-    potential follow-up queries. Uses structured output to extract
-    the follow-up query in JSON format.
+    Parameters
+    ----------
+    state : AgentState
+        当前全局状态。
+    config : RunnableConfig
+        运行时配置对象。
 
-    Args:
-        state: Current graph state containing the running summary and research topic
-        config: Configuration for the runnable, including LLM provider settings
+    Returns
+    -------
+    ReflectionOutput
+        反思节点输出，包含信息充分性判定、知识缺口说明和后续查询列表。
 
-    Returns:
-        Dictionary with state update, including search_query key containing the generated follow-up query
+    Notes
+    -----
+    - `research_loop_count` 在此节点递增；
+    - 结构化输出由 `Reflection` schema 强约束，降低 JSON 解析失败概率。
     """
     configurable = Configuration.from_runnable_config(config)
-    # Increment the research loop count and get the reasoning model
-    state["research_loop_count"] = state.get("research_loop_count", 0) + 1
-    reasoning_model = state.get("reasoning_model", configurable.reflection_model)
-
-    # Format the prompt
-    current_date = get_current_date()
-    formatted_prompt = reflection_instructions.format(
-        current_date=current_date,
+    research_loop_count = state.get("research_loop_count", 0) + 1
+    reasoning_model = select_reflection_model(state, configurable)
+    formatted_prompt = build_reflection_prompt(
         research_topic=get_research_topic(state["messages"]),
-        summaries="\n\n---\n\n".join(state["web_research_result"]),
+        summaries=state["web_research_result"],
     )
     result = llm_client.generate_structured(
         formatted_prompt,
@@ -137,30 +198,39 @@ def reflection(state: OverallState, config: RunnableConfig) -> ReflectionState:
         temperature=1.0,
     )
 
-    return {
+    output: ReflectionOutput = {
         "is_sufficient": result.is_sufficient,
         "knowledge_gap": result.knowledge_gap,
         "follow_up_queries": result.follow_up_queries,
-        "research_loop_count": state["research_loop_count"],
+        "research_loop_count": research_loop_count,
         "number_of_ran_queries": len(state["search_query"]),
     }
+    output.update(carry_reasoning_model(state))
+    return output
 
 
 def evaluate_research(
-    state: ReflectionState,
+    state: AgentState,
     config: RunnableConfig,
-) -> OverallState:
-    """LangGraph routing function that determines the next step in the research flow.
+) -> str | list[Send]:
+    """根据反思结果决定流程走向。
 
-    Controls the research loop by deciding whether to continue gathering information
-    or to finalize the summary based on the configured maximum number of research loops.
+    Parameters
+    ----------
+    state : AgentState
+        当前全局状态（需包含反思节点输出字段）。
+    config : RunnableConfig
+        运行时配置对象。
 
-    Args:
-        state: Current graph state containing the research loop count
-        config: Configuration for the runnable, including max_research_loops setting
+    Returns
+    -------
+    str or list[Send]
+        - 若信息充分或达最大循环次数，返回 `"finalize_answer"`；
+        - 否则返回 follow-up 查询对应的 `Send` 列表。
 
-    Returns:
-        String literal indicating the next node to visit ("web_research" or "finalize_summary")
+    Notes
+    -----
+    该函数是图中的关键路由节点，直接决定“继续检索”还是“结束总结”。
     """
     configurable = Configuration.from_runnable_config(config)
     max_research_loops = (
@@ -172,40 +242,48 @@ def evaluate_research(
         return "finalize_answer"
     else:
         sends: list[Send] = []
-        reasoning_model = state.get("reasoning_model")
+        reasoning_payload = carry_reasoning_model(state)
         for idx, follow_up_query in enumerate(state["follow_up_queries"]):
             payload: dict[str, int | str] = {
                 "search_query": follow_up_query,
                 "id": state["number_of_ran_queries"] + int(idx),
             }
-            if reasoning_model:
-                payload["reasoning_model"] = reasoning_model
+            payload.update(reasoning_payload)
             sends.append(Send("web_research", payload))
         return sends
 
 
-def finalize_answer(state: OverallState, config: RunnableConfig):
-    """LangGraph node that finalizes the research summary.
+def finalize_answer(
+    state: FinalizeAnswerInput,
+    config: RunnableConfig,
+) -> FinalizeAnswerOutput:
+    """合成最终回答并替换短链接为真实来源链接。
 
-    Prepares the final output by deduplicating and formatting sources, then
-    combining them with the running summary to create a well-structured
-    research report with proper citations.
+    Parameters
+    ----------
+    state : FinalizeAnswerInput
+        最终节点输入，包含消息、摘要和来源集合。
+    config : RunnableConfig
+        运行时配置对象。
 
-    Args:
-        state: Current graph state containing the running summary and sources gathered
+    Returns
+    -------
+    FinalizeAnswerOutput
+        包含：
 
-    Returns:
-        Dictionary with state update, including running_summary key containing the formatted final summary with sources
+        - `messages`：最终 AI 回复；
+        - `sources_gathered`：仅保留最终答案实际引用到的来源。
+
+    Notes
+    -----
+    节点会遍历全部来源占位符，并把正文中的短链接替换为真实 URL，
+    以便前端展示与后续持久化时都使用可访问链接。
     """
     configurable = Configuration.from_runnable_config(config)
-    reasoning_model = state.get("reasoning_model") or configurable.answer_model
-
-    # Format the prompt
-    current_date = get_current_date()
-    formatted_prompt = answer_instructions.format(
-        current_date=current_date,
+    reasoning_model = select_answer_model(state, configurable)
+    formatted_prompt = build_answer_prompt(
         research_topic=get_research_topic(state["messages"]),
-        summaries="\n---\n\n".join(state["web_research_result"]),
+        summaries=state["web_research_result"],
     )
 
     final_answer_text = llm_client.generate_text(
@@ -231,7 +309,7 @@ def finalize_answer(state: OverallState, config: RunnableConfig):
 
 
 # Create our Agent Graph
-builder = StateGraph(OverallState, config_schema=Configuration)
+builder = StateGraph(AgentState, config_schema=Configuration)
 
 # Define the nodes we will cycle between
 builder.add_node("generate_query", generate_query)

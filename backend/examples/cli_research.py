@@ -4,7 +4,18 @@ from agent.graph import graph
 
 
 def main() -> None:
-    """Run the research agent from the command line."""
+    """命令行方式运行研究 Agent。
+
+    Parameters
+    ----------
+    None
+        通过 `argparse` 从命令行读取参数。
+
+    Returns
+    -------
+    None
+        函数直接将最终回答打印到标准输出。
+    """
     parser = argparse.ArgumentParser(description="Run the LangGraph research agent")
     parser.add_argument("question", help="Research question")
     parser.add_argument(
