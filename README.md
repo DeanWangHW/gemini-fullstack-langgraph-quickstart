@@ -14,6 +14,30 @@ This project demonstrates a fullstack application using a React frontend and a L
 - 📄 Generates answers with citations from gathered sources.
 - 🔄 Hot-reloading for both frontend and backend during development.
 
+## 中文说明（阶段一已完成）
+
+当前仓库已经完成“阶段一：OpenAI SDK 迁移”，核心状态如下：
+
+- 后端模型调用已从 Gemini 路径迁移为 OpenAI Python SDK。
+- Web 搜索依赖已切换为 `ddgs`（替代旧的 `duckduckgo_search`）。
+- Agent 主流程保持不变：`generate_query -> web_research -> reflection -> finalize_answer`。
+- 已补充后端单元测试，覆盖配置、图流程、CLI、LLM 客户端等关键路径。
+
+常用本地运行方式（后端）：
+
+```bash
+cd backend
+pip install .
+python examples/cli_research.py "你的问题"
+```
+
+流式调试：
+
+```bash
+cd backend
+python examples/cli_research_stream.py "你的问题" --pretty
+```
+
 ## Project Structure
 
 The project is divided into two main directories:
