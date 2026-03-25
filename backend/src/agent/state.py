@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import TypedDict
 
 from langgraph.graph import add_messages
-from typing_extensions import Annotated
+from typing_extensions import Annotated, NotRequired
 
 
 import operator
@@ -27,20 +27,18 @@ class ReflectionState(TypedDict):
     follow_up_queries: Annotated[list, operator.add]
     research_loop_count: int
     number_of_ran_queries: int
-
-
-class Query(TypedDict):
-    query: str
-    rationale: str
+    reasoning_model: NotRequired[str]
 
 
 class QueryGenerationState(TypedDict):
-    search_query: list[Query]
+    search_query: list[str]
+    reasoning_model: NotRequired[str]
 
 
 class WebSearchState(TypedDict):
     search_query: str
-    id: str
+    id: int
+    reasoning_model: NotRequired[str]
 
 
 @dataclass(kw_only=True)

@@ -14,6 +14,9 @@ Instructions:
 - Don't produce more than {number_queries} queries.
 - Queries should be diverse, if the topic is broad, generate more than 1 query.
 - Don't generate multiple similar queries, 1 is enough.
+- Use concise search-engine phrasing (roughly 6-14 words), not full natural-language questions.
+- Do not include citation directives such as "please cite", "cite", "with references", or similar instructions.
+- Keep only the core entities, years, metrics, and region/technology keywords needed for retrieval.
 - Query should ensure that the most current information is gathered. The current date is {current_date}.
 
 Format: 
@@ -34,7 +37,7 @@ Topic: What revenue grew more last year apple stock or the number of people buyi
 Context: {research_topic}"""
 
 
-web_searcher_instructions = """Conduct targeted Google Searches to gather the most recent, credible information on "{research_topic}" and synthesize it into a verifiable text artifact.
+web_searcher_instructions = """Conduct targeted web searches to gather the most recent, credible information on "{research_topic}" and synthesize it into a verifiable text artifact.
 
 Instructions:
 - Query should ensure that the most current information is gathered. The current date is {current_date}.
@@ -54,6 +57,8 @@ Instructions:
 - If provided summaries are sufficient to answer the user's question, don't generate a follow-up query.
 - If there is a knowledge gap, generate a follow-up query that would help expand your understanding.
 - Focus on technical details, implementation specifics, or emerging trends that weren't fully covered.
+- Follow-up queries must be short keyword-style search phrases, not long questions.
+- Do not include instructions like "please cite" or any citation wording.
 
 Requirements:
 - Ensure the follow-up query is self-contained and includes necessary context for web search.

@@ -8,6 +8,10 @@ help:
 
 dev-frontend:
 	@echo "Starting frontend development server..."
+	@cd frontend && if [ ! -x node_modules/.bin/vite ]; then \
+		echo "Frontend dependencies not found. Installing with npm ci..."; \
+		npm ci; \
+	fi
 	@cd frontend && npm run dev
 
 dev-backend:
@@ -18,3 +22,4 @@ dev-backend:
 dev:
 	@echo "Starting both frontend and backend development servers..."
 	@make dev-frontend & make dev-backend 
+	
