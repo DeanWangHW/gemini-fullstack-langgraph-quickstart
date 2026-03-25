@@ -1,3 +1,13 @@
+"""命令行研究脚本（流式节点更新版）。
+
+与 `cli_research.py` 相比，本脚本会逐节点输出 LangGraph 运行中的状态增量，
+用于调试以下问题：
+
+1. 查询生成是否符合预期；
+2. 网页检索阶段是否拿到来源与摘要；
+3. 反思路由是否会触发后续查询。
+"""
+
 import argparse
 import json
 from typing import Any

@@ -1,3 +1,13 @@
+"""`agent.llm_client` 模块单元测试。
+
+本文件重点验证以下能力：
+
+1. JSON 解析、来源标签与兜底摘要等纯函数行为；
+2. OpenAI 客户端初始化参数与异常路径；
+3. DDG 检索重试、backend 兼容与查询清洗逻辑；
+4. 检索失败时的错误可读性与结果稳定性。
+"""
+
 import sys
 from types import SimpleNamespace
 
@@ -9,15 +19,18 @@ from agent.tools_and_schemas import SearchQueryList
 
 
 def test_parse_json_payload_supports_fenced_json() -> None:
+    """应支持解析带 ```json 围栏的模型输出。"""
     raw = '```json\n{"a": 1}\n```'
     assert LLMClient._parse_json_payload(raw) == {"a": 1}
 
 
 def test_make_source_label_prefers_title() -> None:
+    """有标题时应优先使用标题作为来源标签。"""
     assert LLMClient._make_source_label("A title", "https://example.com") == "A title"
 
 
 def test_make_source_label_uses_hostname_without_title() -> None:
+    """标题缺失时应退化为域名标签。"""
     assert (
         LLMClient._make_source_label("", "https://www.example.com/path")
         == "example.com"
@@ -25,6 +38,7 @@ def test_make_source_label_uses_hostname_without_title() -> None:
 
 
 def test_fallback_summary_contains_links() -> None:
+    """兜底摘要应包含文本事实与短链接。"""
     summary = LLMClient._fallback_summary(
         [{"snippet": "Fact 1", "title": "T1", "url": "https://a.com"}],
         [{"label": "a", "short_url": "https://short/1", "value": "https://a.com"}],
@@ -34,6 +48,7 @@ def test_fallback_summary_contains_links() -> None:
 
 
 def test_get_client_requires_api_key(monkeypatch) -> None:
+    """缺失 API Key 时应抛出明确异常。"""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     client = LLMClient(api_key=None)
     with pytest.raises(ValueError, match="OPENAI_API_KEY is not set"):
@@ -41,6 +56,7 @@ def test_get_client_requires_api_key(monkeypatch) -> None:
 
 
 def test_get_client_passes_base_url_to_openai(monkeypatch) -> None:
+    """初始化 OpenAI 客户端时应正确传递 `base_url`。"""
     captured = {}
 
     class FakeOpenAI:
@@ -57,6 +73,7 @@ def test_get_client_passes_base_url_to_openai(monkeypatch) -> None:
 
 
 def test_generate_structured_parses_schema(monkeypatch) -> None:
+    """结构化生成应能通过 schema 校验并返回模型对象。"""
     client = LLMClient(api_key="test-key")
     monkeypatch.setattr(
         client,
@@ -73,6 +90,7 @@ def test_generate_structured_parses_schema(monkeypatch) -> None:
 
 
 def test_search_and_summarize_returns_empty_result_message(monkeypatch) -> None:
+    """无检索结果时应返回可读提示且来源为空。"""
     class FakeDDGS:
         def __enter__(self):
             return self
@@ -96,6 +114,7 @@ def test_search_and_summarize_returns_empty_result_message(monkeypatch) -> None:
 
 
 def test_search_and_summarize_uses_fallback_when_model_has_no_citations(monkeypatch) -> None:
+    """模型摘要无引用时应回退到内置可引用摘要。"""
     search_results = [
         {"title": "First Source", "href": "https://a.com", "body": "Alpha fact"},
         {"title": "Second Source", "href": "https://b.com", "body": "Beta fact"},
@@ -131,6 +150,7 @@ def test_search_and_summarize_uses_fallback_when_model_has_no_citations(monkeypa
 
 
 def test_search_and_summarize_retries_backends_and_recovers(monkeypatch) -> None:
+    """前置 backend 失败后应继续重试并最终恢复。"""
     class FakeDDGS:
         call_count = 0
 
@@ -165,6 +185,7 @@ def test_search_and_summarize_retries_backends_and_recovers(monkeypatch) -> None
 
 
 def test_search_and_summarize_reports_provider_errors_when_all_fail(monkeypatch) -> None:
+    """所有 backend 失败时应返回 provider 错误摘要。"""
     class AlwaysFailDDGS:
         def __enter__(self):
             return self
@@ -193,6 +214,7 @@ def test_search_and_summarize_reports_provider_errors_when_all_fail(monkeypatch)
 
 
 def test_search_and_summarize_falls_back_to_default_backend(monkeypatch) -> None:
+    """当 provider 不支持 backend 参数时应回退默认调用。"""
     class FakeDDGS:
         def __enter__(self):
             return self
@@ -224,6 +246,7 @@ def test_search_and_summarize_falls_back_to_default_backend(monkeypatch) -> None
 
 
 def test_normalize_search_rows_handles_link_and_description_keys() -> None:
+    """归一化逻辑应兼容 `link/description` 字段命名。"""
     rows = LLMClient._normalize_search_rows(
         [
             {
@@ -244,6 +267,7 @@ def test_normalize_search_rows_handles_link_and_description_keys() -> None:
 
 
 def test_search_and_summarize_sanitizes_long_query_before_search(monkeypatch) -> None:
+    """长自然语言查询应被压缩并移除 citation 指令。"""
     long_query = (
         "What were average global lithium-ion battery pack prices in 2024 and 2025, "
         "the outlook for 2026, and the differences by chemistry (LFP vs NMC) and "

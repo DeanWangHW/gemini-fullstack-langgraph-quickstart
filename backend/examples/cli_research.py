@@ -1,3 +1,12 @@
+"""命令行研究脚本（非流式）。
+
+该脚本用于在本地终端快速验证后端图流程是否可用，适合：
+
+1. 验证 `.env` 与模型配置是否生效；
+2. 检查图执行结果是否能返回最终答案；
+3. 作为 CI 之外的人机快速冒烟入口。
+"""
+
 import argparse
 from langchain_core.messages import HumanMessage
 from agent.graph import graph

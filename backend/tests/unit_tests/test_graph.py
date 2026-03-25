@@ -1,3 +1,13 @@
+"""`agent.graph` 主流程单元测试。
+
+本文件覆盖图中四个核心节点与路由函数：
+
+1. `generate_query`：结构化查询生成与模型选择；
+2. `web_research`：检索结果映射到状态；
+3. `reflection` / `evaluate_research`：循环控制与分支决策；
+4. `finalize_answer`：引用替换与来源裁剪。
+"""
+
 import importlib
 
 from langchain_core.messages import HumanMessage
@@ -8,6 +18,7 @@ from agent.tools_and_schemas import Reflection, SearchQueryList
 
 
 def test_generate_query_uses_structured_llm(monkeypatch) -> None:
+    """验证查询生成节点调用结构化输出接口。"""
     captured = {}
 
     def fake_generate_structured(prompt, *, schema, model, temperature):
@@ -36,6 +47,7 @@ def test_generate_query_uses_structured_llm(monkeypatch) -> None:
 
 
 def test_generate_query_prefers_reasoning_model_from_state(monkeypatch) -> None:
+    """验证查询生成节点优先使用请求级模型覆盖。"""
     captured = {}
 
     def fake_generate_structured(prompt, *, schema, model, temperature):
@@ -60,6 +72,7 @@ def test_generate_query_prefers_reasoning_model_from_state(monkeypatch) -> None:
 
 
 def test_continue_to_web_research_creates_send_objects() -> None:
+    """验证查询列表会扇出为多个 `Send` 任务。"""
     sends = graph_module.continue_to_web_research({"search_query": ["a", "b"]})
     assert len(sends) == 2
     assert all(isinstance(item, Send) for item in sends)
@@ -69,6 +82,7 @@ def test_continue_to_web_research_creates_send_objects() -> None:
 
 
 def test_continue_to_web_research_propagates_reasoning_model() -> None:
+    """验证 `continue_to_web_research` 会透传模型字段。"""
     sends = graph_module.continue_to_web_research(
         {
             "search_query": ["a", "b"],
@@ -80,6 +94,7 @@ def test_continue_to_web_research_propagates_reasoning_model() -> None:
 
 
 def test_web_research_maps_results_to_state(monkeypatch) -> None:
+    """验证检索节点将摘要和来源映射为状态增量。"""
     captured = {}
 
     def fake_search_and_summarize(**kwargs):
@@ -112,6 +127,7 @@ def test_web_research_maps_results_to_state(monkeypatch) -> None:
 
 
 def test_reflection_increments_loop_and_returns_decision(monkeypatch) -> None:
+    """验证反思节点会递增循环计数并返回判定结果。"""
     monkeypatch.setattr(
         graph_module.llm_client,
         "generate_structured",
@@ -136,6 +152,7 @@ def test_reflection_increments_loop_and_returns_decision(monkeypatch) -> None:
 
 
 def test_evaluate_research_returns_finalize_when_sufficient() -> None:
+    """信息充分时应直接路由到最终回答节点。"""
     next_step = graph_module.evaluate_research(
         {"is_sufficient": True, "research_loop_count": 1},
         {"configurable": {"max_research_loops": 3}},
@@ -144,6 +161,7 @@ def test_evaluate_research_returns_finalize_when_sufficient() -> None:
 
 
 def test_evaluate_research_returns_follow_up_sends() -> None:
+    """信息不足时应生成后续检索分支任务。"""
     next_step = graph_module.evaluate_research(
         {
             "is_sufficient": False,
@@ -160,6 +178,7 @@ def test_evaluate_research_returns_follow_up_sends() -> None:
 
 
 def test_evaluate_research_propagates_reasoning_model_to_followups() -> None:
+    """后续检索任务应继承请求级模型字段。"""
     next_step = graph_module.evaluate_research(
         {
             "is_sufficient": False,
@@ -177,6 +196,7 @@ def test_evaluate_research_propagates_reasoning_model_to_followups() -> None:
 
 
 def test_finalize_answer_replaces_short_urls(monkeypatch) -> None:
+    """最终回答应将短链接替换为真实 URL，并裁剪未引用来源。"""
     monkeypatch.setattr(
         graph_module.llm_client,
         "generate_text",

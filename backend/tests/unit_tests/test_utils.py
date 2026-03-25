@@ -1,3 +1,9 @@
+"""`agent.utils` 模块单元测试。
+
+覆盖研究主题拼接、短链接映射、引用标记插入与旧版 grounding 引用解析，
+用于保证工具函数在历史兼容与当前流程中行为一致。
+"""
+
 from types import SimpleNamespace
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -11,11 +17,13 @@ from agent.utils import (
 
 
 def test_get_research_topic_single_message() -> None:
+    """单轮对话应直接返回用户问题文本。"""
     messages = [HumanMessage(content="Explain LangGraph")]
     assert get_research_topic(messages) == "Explain LangGraph"
 
 
 def test_get_research_topic_with_history() -> None:
+    """多轮对话应按 User/Assistant 前缀展开上下文。"""
     messages = [
         HumanMessage(content="Question 1"),
         AIMessage(content="Answer 1"),
@@ -28,6 +36,7 @@ def test_get_research_topic_with_history() -> None:
 
 
 def test_resolve_urls_deduplicates_entries() -> None:
+    """相同 URL 应映射为同一短链接，避免重复来源。"""
     chunks = [
         SimpleNamespace(web=SimpleNamespace(uri="https://example.com/a")),
         SimpleNamespace(web=SimpleNamespace(uri="https://example.com/b")),
@@ -40,6 +49,7 @@ def test_resolve_urls_deduplicates_entries() -> None:
 
 
 def test_insert_citation_markers_appends_expected_markers() -> None:
+    """引用标记应插入到对应文本区间末尾。"""
     text = "Alpha Beta Gamma"
     citations = [
         {
@@ -59,6 +69,7 @@ def test_insert_citation_markers_appends_expected_markers() -> None:
 
 
 def test_get_citations_extracts_segments() -> None:
+    """应从 grounding 结构中提取区间与来源段信息。"""
     response = SimpleNamespace(
         candidates=[
             SimpleNamespace(

@@ -1,3 +1,12 @@
+"""Pytest 全局测试夹具与路径初始化配置。
+
+Notes
+-----
+- 将 `backend/src` 动态加入 `sys.path`，确保测试环境导入路径与运行时一致；
+- 为依赖 `LLMClient._get_client` 的测试提供稳定的默认 `OPENAI_API_KEY`，
+  避免单测因本地环境变量缺失产生偶发失败。
+"""
+
 import os
 import sys
 from pathlib import Path
